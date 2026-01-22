@@ -104,144 +104,190 @@ SECTORS = {
 ALL_TICKERS = sorted(list(set([ticker for s in SECTORS.values() for ticker in s])))
 
 # === [6. 설정값] ===
-CONFIG = {"NAV": 10000}
+CONFIG = {"NAV": 10000, "BASE_BET": 0.15}
 
 # === [7. 엔진: Logic Core] ===
 @st.cache_data(ttl=600)
 def get_market_data(tickers):
+    tickers = list(set(tickers))
+    try:
+        spy = yf.download("SPY", period="6mo", progress=False)
+        vix = yf.Ticker("^VIX").history(period="5d")
+        regime_score = 5.0
+        if not spy.empty:
+            spy_ma200 = spy['Close'].rolling(200).mean().iloc[-1]
+            if spy['Close'].iloc[-1] > spy_ma200: regime_score += 2.0
+        if not vix.empty:
+            v_val = vix['Close'].iloc[-1]
+            if v_val < 20: regime_score += 3.0
+            elif v_val > 30: regime_score -= 3.0
+    except: regime_score = 5.0
+
     data_list = []
     mkt_code, mkt_label, mkt_class = get_market_status()
     
     def fetch_single(ticker):
+        sc_trend, sc_squeeze, sc_vol, sc_option = 5.0, 5.0, 5.0, 5.0
+        rsi, pcr, c_vol, p_vol = 50, 1.0, 0, 0
+        c_pct, p_pct = 50, 50
+        
         try:
             stock = yf.Ticker(ticker)
-            hist = stock.history(period="1y")
-            if hist.empty or len(hist) < 60: return None
+            hist_day = stock.history(period="1y") 
+            if hist_day.empty or len(hist_day) < 60: return None
             
-            cur = hist['Close'].iloc[-1]
-            open_price = hist['Open'].iloc[-1]
-            prev_close = hist['Close'].iloc[-2]
-            diff_open, diff_prev = cur - open_price, cur - prev_close
-            chg_open, chg_prev = (diff_open/open_price)*100, (diff_prev/prev_close)*100
+            hist_rt = stock.history(period="1d", interval="1m", prepost=True)
+            cur = hist_rt['Close'].iloc[-1] if not hist_rt.empty else hist_day['Close'].iloc[-1]
+
+            open_p, prev_c = hist_day['Open'].iloc[-1], hist_day['Close'].iloc[-2]
+            diff_o, diff_p = cur - open_p, cur - prev_c
+            chg_o, chg_p = (diff_o/open_p)*100, (diff_p/prev_c)*100
             
-            # 지표 계산
-            ma20 = hist['Close'].rolling(20).mean()
-            std = hist['Close'].rolling(20).std()
-            bbw = ((ma20 + std*2) - (ma20 - std*2)) / ma20
+            ma20 = hist_day['Close'].rolling(20).mean()
+            std20 = hist_day['Close'].rolling(20).std()
+            bbw = ((ma20 + std20*2) - (ma20 - std20*2)) / ma20
             sc_squeeze = (1 - bbw.rank(pct=True).iloc[-1]) * 10
-            
-            vol_avg = hist['Volume'].rolling(20).mean().iloc[-1]
-            vol_ratio = hist['Volume'].iloc[-1] / vol_avg
+            sc_trend = 7.0 if cur > ma20.iloc[-1] else 3.0
+            vol_avg = hist_day['Volume'].rolling(20).mean().iloc[-1]
+            vol_ratio = hist_day['Volume'].iloc[-1] / vol_avg
             sc_vol = min(10, vol_ratio * 3)
+
+            delta = hist_day['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(14).mean().iloc[-1]
+            loss = (-delta.where(delta < 0, 0)).rolling(14).mean().iloc[-1]
+            rsi = 100 - (100 / (1 + gain/(loss if loss != 0 else 0.001)))
+
+            try:
+                opts = stock.options
+                if opts:
+                    chain = stock.option_chain(opts[0])
+                    c_vol, p_vol = chain.calls['volume'].sum(), chain.puts['volume'].sum()
+                    if c_vol > 0: pcr = p_vol / c_vol
+                    sc_option = 7.0 if pcr < 0.7 else 3.0 if pcr > 1.2 else 5.0
+                    total = c_vol + p_vol
+                    if total > 0:
+                        c_pct, p_pct = (c_vol/total)*100, (p_vol/total)*100
+            except: pass
+
+            category, strat_name, strat_class = "NONE", "관망", "st-none"
+            t_days, tgt_pct, stp_pct, trl_pct, b_ratio = 5, 0.05, 0.03, 0.02, 0.0
+            news_ok, news_hl = False, None
             
-            # 전략 및 타이트한 가격 로직 (익절라인 정상화: 현재가 + %)
-            cat, s_name, s_class = "NONE", "관망", "st-none"
-            tgt_pct, stp_pct, trl_pct, t_limit = 0.05, 0.03, 0.015, "5일"
+            if sc_vol > 7 and cur > ma20.iloc[-1] and rsi < 70:
+                category, strat_name, strat_class = "SHORT", "🚀 단타", "st-gamma"
+                t_days, tgt_pct, stp_pct, trl_pct, b_ratio = 1, 0.03, 0.02, 0.015, 0.05
+                news_ok, news_hl = check_recent_news(ticker)
+            elif sc_squeeze > 7 and sc_trend > 6:
+                category, strat_name, strat_class = "SWING", "🌊 스윙", "st-squeeze"
+                t_days, tgt_pct, stp_pct, trl_pct, b_ratio = 14, 0.10, 0.06, 0.04, 0.10
+            elif sc_trend > 8 and regime_score > 7:
+                category, strat_name, strat_class = "LONG", "🌲 장투", "st-value"
+                t_days, tgt_pct, stp_pct, trl_pct, b_ratio = 90, 0.30, 0.15, 0.10, 0.15
 
-            if sc_vol > 7 and cur > ma20.iloc[-1]: # 단타
-                cat, s_name, s_class = "SHORT", "🚀 단타", "st-gamma"
-                tgt_pct, stp_pct, trl_pct, t_limit = 0.03, 0.02, 0.01, "당일 청산"
-            elif sc_squeeze > 7: # 스윙
-                cat, s_name, s_class = "SWING", "🌊 스윙", "st-squeeze"
-                tgt_pct, stp_pct, trl_pct, t_limit = 0.10, 0.06, 0.04, "14일"
-            elif cur > ma20.iloc[-1] * 1.05: # 장투
-                cat, s_name, s_class = "LONG", "🌲 장투", "st-value"
-                tgt_pct, stp_pct, trl_pct, t_limit = 0.30, 0.15, 0.10, "90일"
-
-            # 뉴스 체크
-            is_hc, news_hl = False, None
-            if vol_ratio > 3.0:
-                ok, hl = check_recent_news(ticker)
-                if ok: is_hc, news_hl = True, hl
-
-            journal = {"ticker": ticker, "squeeze": sc_squeeze, "entry": cur, "category": cat, "timestamp": get_timestamp_str()}
+            # 익절라인(+) 및 칼손절(-) 논리 정상화
+            tgt_val = cur * (1 + tgt_pct)
+            trl_val = cur * (1 + trl_pct)  # 수익 보존 (현재가 + %)
+            stp_val = cur * (1 - stp_pct)  # 손실 방어 (현재가 - %)
 
             return {
-                "Ticker": ticker, "Price": cur, "StratName": s_name, "StratClass": s_class,
-                "Squeeze": sc_squeeze, "Trend": 8.0 if cur > ma20.iloc[-1] else 3.0, "Vol": sc_vol, "Regime": 5.0,
-                "Target": cur*(1+tgt_pct), "Stop": cur*(1-stp_pct), "Trail": cur*(1+trl_pct), "Time": t_limit,
-                "DiffOpen": diff_open, "ChgOpen": chg_open, "DiffPrev": diff_prev, "ChgPrev": chg_prev,
-                "History": hist['Close'], "MktL": mkt_label, "MktC": mkt_class, "HC": is_hc, "News": news_hl, "Journal": journal
+                "Ticker": ticker, "Price": cur, "StratName": strat_name, "StratClass": strat_class,
+                "Squeeze": sc_squeeze, "Trend": sc_trend, "Regime": regime_score, "Vol": sc_vol, "Option": sc_option,
+                "Target": tgt_val, "Stop": stp_val, "HardStop": stp_val, "TrailStop": trl_val, "TimeStop": t_days,
+                "ChgOpen": chg_o, "ChgPrev": chg_p, "DiffOpen": diff_o, "DiffPrev": diff_p,
+                "RSI": rsi, "PCR": pcr, "CallVol": c_vol, "PutVol": p_vol, "CallPct": c_pct, "PutPct": p_pct,
+                "History": hist_day['Close'], "MktLabel": mkt_label, "MktClass": mkt_class,
+                "HighConviction": news_ok and vol_ratio >= 3.0, "NewsHeadline": news_hl,
+                "BetText": "비중:최대" if b_ratio >= 0.15 else "비중:보통" if b_ratio >= 0.10 else "비중:최소" if b_ratio > 0 else "관망",
+                "Journal": {"티커": ticker, "진입가": round(cur, 2), "전략": strat_name, "일시": get_timestamp_str()}
             }
         except: return None
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-        futures = [ex.submit(fetch_single, t) for t in tickers]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(fetch_single, t) for t in tickers]
         for f in concurrent.futures.as_completed(futures):
             res = f.result()
             if res: data_list.append(res)
     return data_list
 
+def create_chart(data, ticker, unique_id):
+    color = '#00FF00' if data.iloc[-1] >= data.iloc[0] else '#FF4444'
+    fig = go.Figure(go.Scatter(y=data, mode='lines', line=dict(color=color, width=2), fill='tozeroy'))
+    fig.update_layout(height=50, margin=dict(l=0,r=0,t=0,b=0), xaxis=dict(visible=False), yaxis=dict(visible=False), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
+    return fig
+
 # === [8. UI 메인] ===
 with st.sidebar:
     st.title("🪟 KOREAN MASTER")
     st.caption(f"NAV: ${CONFIG['NAV']:,}")
-    mode = st.radio("모드", ["📌 섹터별", "🔍 검색", "⭐ 관심종목"])
+    mode = st.radio("분석 모드", ["📌 섹터별 보기", "🔍 무제한 검색", "⭐ 내 관심종목 보기"])
     target_tickers = []
-    if mode == "📌 섹터별":
-        sec = st.selectbox("섹터 선택", list(SECTORS.keys()))
-        target_tickers = SECTORS[sec]
-    elif mode == "🔍 검색":
-        t_input = st.text_input("티커 입력 (쉼표 구분)", "AAPL,TSLA,NVDA")
-        target_tickers = [x.strip().upper() for x in t_input.split(',')]
-    elif mode == "⭐ 관심종목":
-        target_tickers = list(st.session_state.watchlist)
+    
+    if mode == "📌 섹터별 보기":
+        selected_sector = st.selectbox("섹터 선택", list(SECTORS.keys())) # 드래그 삭제 -> 드롭다운 변경 완료
+        target_tickers = SECTORS[selected_sector]
+    elif mode == "🔍 무제한 검색":
+        search_txt = st.text_input("티커 입력 (쉼표 구분)", "NVDA,TSLA")
+        target_tickers = [t.strip().upper() for t in search_txt.split(',')]
+    else: target_tickers = list(st.session_state.watchlist)
     
     if st.button("🔄 새로고침"): st.cache_data.clear(); st.rerun()
 
 st.title(f"🇺🇸 {mode}")
-market_data = get_market_data(target_tickers)
+if target_tickers:
+    market_data = get_market_data(target_tickers)
+    if not market_data:
+        st.warning("데이터를 불러올 수 없거나 유효하지 않은 티커입니다.")
+    else:
+        tab1, tab2 = st.tabs(["📊 대시보드", "💰 상세 리포트"])
+        with tab1:
+            cols = st.columns(3)
+            for i, row in enumerate(market_data):
+                with cols[i % 3]:
+                    def get_c(v): return "sc-high" if v >= 7 else "sc-mid" if v >= 4 else "sc-low"
+                    is_fav = row['Ticker'] in st.session_state.watchlist
+                    if st.button("❤️" if is_fav else "🤍", key=f"f_{i}"):
+                        if is_fav: st.session_state.watchlist.remove(row['Ticker'])
+                        else: st.session_state.watchlist.add(row['Ticker'])
+                        st.rerun()
+                    
+                    badge = "<span class='st-highconv'>🔥 High Conviction</span>" if row['HighConviction'] else ""
+                    news = f"<span class='news-line'>📰 {row['NewsHeadline']}</span>" if row['NewsHeadline'] else ""
+                    c_o, c_p = ("#00FF00" if row['ChgOpen'] >= 0 else "#FF4444"), ("#00FF00" if row['ChgPrev'] >= 0 else "#FF4444")
 
-if market_data:
-    tab1, tab2 = st.tabs(["📊 대시보드", "💰 상세 리포트"])
-    with tab1:
-        cols = st.columns(3)
-        for i, row in enumerate(market_data):
-            with cols[i % 3]:
-                is_fav = row['Ticker'] in st.session_state.watchlist
-                if st.button("❤️" if is_fav else "🤍", key=f"fav_{i}"):
-                    if is_fav: st.session_state.watchlist.remove(row['Ticker'])
-                    else: st.session_state.watchlist.add(row['Ticker'])
-                    st.rerun()
-                
-                badge = "<span class='st-highconv'>🔥 High Conviction</span>" if row['HC'] else ""
-                news = f"<span class='news-line'>📰 {row['News']}</span>" if row['News'] else ""
-                c_op = "#00FF00" if row['ChgOpen'] >= 0 else "#FF4444"
-                c_pr = "#00FF00" if row['ChgPrev'] >= 0 else "#FF4444"
-
-                html = f"""<div class="metric-card">
-                    <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>
-                        <div>{badge}<span class="badge {row['MktC']}">{row['MktL']}</span></div>
-                    </div>
-                    {news}
-                    <div class="price-row" style="margin-top:10px;"><span class="price-label">현재가(24h)</span><span class="price-val">${row['Price']:.2f}</span></div>
-                    <div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_op}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div>
-                    <div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_pr}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div>
-                    <div style="text-align:center; margin:10px 0;"><span class="{row['StratClass']}">{row['StratName']}</span></div>
-                    <div class="score-container">
-                        <div class="score-item">응축<br><span class="score-val {'sc-high' if row['Squeeze']>=7 else 'sc-low'}">{row['Squeeze']:.0f}</span></div>
-                        <div class="score-item">추세<br><span class="score-val {'sc-high' if row['Trend']>=7 else 'sc-low'}">{row['Trend']:.0f}</span></div>
-                        <div class="score-item">수급<br><span class="score-val {'sc-high' if row['Vol']>=7 else 'sc-low'}">{row['Vol']:.0f}</span></div>
-                    </div>
-                    <div class="price-target-box">
-                        <div class="pt-item"><span class="pt-label" style="color:#aaa;">목표가</span><span class="pt-val" style="color:#00FF00;">${row['Target']:.2f}</span></div>
-                        <div class="pt-item"><span class="pt-label" style="color:#aaa;">손절가</span><span class="pt-val" style="color:#FF4444;">${row['Stop']:.2f}</span></div>
-                    </div>
-                    <div class="exit-box">
-                        <span style="color:#00FF00; font-weight:bold;">✅ 익절라인: ${row['Trail']:.2f}</span><br>
-                        <span style="color:#FF4444;">🚨 칼손절가: ${row['Stop']:.2f}</span><br>
-                        <span style="color:#aaa;">⏳ 전략 유효기간: {row['Time']}</span>
-                    </div>
-                </div>"""
-                st.markdown(html, unsafe_allow_html=True)
-                fig = go.Figure(go.Scatter(y=row['History'], mode='lines', line=dict(color='#00CCFF', width=1.5), fill='tozeroy'))
-                fig.update_layout(height=60, margin=dict(l=0,r=0,t=0,b=0), xaxis=dict(visible=False), yaxis=dict(visible=False), paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig, use_container_width=True, key=f"chart_{i}", config={'displayModeBar': False})
-    with tab2:
-        cols = st.columns(3)
-        for i, row in enumerate(market_data):
-            with cols[i % 3]:
-                # 카드 형식으로 상세 리포트 렌더링 (드래그/JSON 삭제)
-                st.info(f"📌 {row['Ticker']} 투자 리포트")
-                st.json(row['Journal'])
+                    html = f"""<div class="metric-card">
+                        <div style="display:flex; justify-content:space-between; align-items:center;">
+                            <a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>
+                            <div>{badge}<span class="badge {row['MktClass']}">{row['MktLabel']}</span></div>
+                        </div>
+                        {news}
+                        <div class="price-row" style="margin-top:10px;"><span class="price-label">현재가</span><span class="price-val">${row['Price']:.2f}</span></div>
+                        <div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{c_o}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div>
+                        <div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{c_p}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div>
+                        <div style="text-align:center; margin:10px 0;"><span class="{row['StratClass']}">{row['StratName']}</span></div>
+                        <div class="score-container">
+                            <div class="score-item">응축<br><span class="score-val {get_c(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div>
+                            <div class="score-item">추세<br><span class="score-val {get_c(row['Trend'])}">{row['Trend']:.0f}</span></div>
+                            <div class="score-item">장세<br><span class="score-val {get_c(row['Regime'])}">{row['Regime']:.0f}</span></div>
+                            <div class="score-item">수급<br><span class="score-val {get_c(row['Vol'])}">{row['Vol']:.0f}</span></div>
+                        </div>
+                        <div class="price-target-box">
+                            <div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val" style="color:#00FF00">${row['Target']:.2f}</span></div>
+                            <div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val" style="color:#FF4444">${row['Stop']:.2f}</span></div>
+                        </div>
+                        <div class="exit-box">
+                            <span style="color:#00FF00; font-weight:bold;">✅ 수익보존(익절): ${row['TrailStop']:.2f}</span><br>
+                            <span style="color:#FF4444;">🚨 칼손절라인: ${row['HardStop']:.2f}</span><br>
+                            <span style="color:#aaa;">⏳ 전략 유효기간: {row['TimeStop']}일</span>
+                        </div>
+                        <div style="margin-top:10px; font-size:11px; color:#888;">RSI: {row['RSI']:.0f} | PCR: {row['PCR']:.2f}</div>
+                    </div>"""
+                    st.markdown(html, unsafe_allow_html=True)
+                    st.plotly_chart(create_chart(row['History'], row['Ticker'], i), use_container_width=True, key=f"c_{i}", config={'displayModeBar':False})
+        
+        # [수정 완료] AI 리포트 원복: 카드+JSON 형태
+        with tab2:
+            cols = st.columns(3)
+            for i, row in enumerate(market_data):
+                with cols[i % 3]:
+                    render_card(row, f"list_{i}")
+                    st.json(row['Journal'])
