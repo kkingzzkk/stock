@@ -10,12 +10,12 @@ import requests
 from datetime import datetime, time, timedelta
 
 # ==========================================
-# 🔑 API 설정 (형님이 주신 키 적용 완료)
+# 🔑 API 설정 (형님 키 적용 완료)
 # ==========================================
 FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg"
 
 # === [1. 페이지 설정] ===
-st.set_page_config(page_title="QUANT NEXUS : REAL TRADER", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT NEXUS : FINAL RECOVERY", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
 # === [2. 관심종목 세션 초기화] ===
 if 'watchlist' not in st.session_state:
@@ -36,27 +36,22 @@ def get_timestamp_str():
     ny_tz = pytz.timezone('America/New_York')
     return datetime.now(ny_tz).strftime("%Y-%m-%d %H:%M:%S")
 
-# 뉴스 체크 함수 (타임아웃 5초로 연장 & 에러 처리 강화)
+# 뉴스 체크 함수 (안전장치 강화: 에러나도 앱 안 죽게 함)
 def check_recent_news(ticker):
     if not FINNHUB_API_KEY: return False, None
     try:
-        # 최근 2일간 뉴스 조회 (범위 확대)
         fr_date = (datetime.now() - timedelta(days=2)).strftime("%Y-%m-%d")
         to_date = datetime.now().strftime("%Y-%m-%d")
         url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={fr_date}&to={to_date}&token={FINNHUB_API_KEY}"
         
-        # 타임아웃 5초로 넉넉하게 설정
-        res = requests.get(url, timeout=5)
-        
+        # 타임아웃 3초로 단축 (속도 향상)
+        res = requests.get(url, timeout=3)
         if res.status_code == 200:
             data = res.json()
             if isinstance(data, list) and len(data) > 0:
-                # 가장 최신 뉴스 1개 리턴
                 return True, data[0].get('headline', '뉴스 내용 없음')
-    except Exception as e:
-        # 에러 나면 그냥 없는 셈 침 (화면 안 깨지게)
-        return False, None
-        
+    except:
+        return False, None # 에러나면 뉴스 없는 셈 침 (데이터 보호)
     return False, None
 
 # === [4. 스타일(CSS)] ===
@@ -107,7 +102,6 @@ st.markdown("""
     .st-risk { background-color: #d63031; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block;}
     .st-none { background-color: #333; color: #777; padding: 3px 8px; border-radius: 4px; font-size: 11px; display:inline-block;}
     
-    /* High Conviction & News Style */
     .st-highconv { background-color: #e17055; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; display:inline-block; margin-left: 5px; vertical-align: middle; }
     .news-line { color: #ffa502; font-size: 12px; margin-top: 4px; padding: 4px; background-color: #2d2d2d; border-radius: 4px; display: block; border-left: 3px solid #ffa502; }
 </style>
@@ -184,6 +178,7 @@ def get_market_data(tickers):
     mkt_code, mkt_label, mkt_class = get_market_status()
     
     def fetch_single(ticker):
+        # 1. 주식 데이터 먼저 확보 (이게 실패하면 안됨)
         try:
             stock = yf.Ticker(ticker)
             hist_day = stock.history(period="1y") 
@@ -251,8 +246,13 @@ def get_market_data(tickers):
             sc_option = max(0, min(10, sc_option))
             sc_option *= 0.5 
 
-            # === [뉴스 체크 (무조건 가져옴)] ===
-            news_ok, news_hl = check_recent_news(ticker)
+            # === [뉴스 체크: 별도 블록으로 분리해서 실패해도 주식 데이터는 나가게 함] ===
+            news_ok = False
+            news_hl = None
+            try:
+                news_ok, news_hl = check_recent_news(ticker)
+            except:
+                pass # 뉴스 에러나도 패스
             
             # === [전략별 진입 조건 및 자금 관리] ===
             category = "NONE"; strat_name="관망"; strat_class="st-none"
@@ -261,9 +261,9 @@ def get_market_data(tickers):
 
             # 1. 단타
             if has_intraday and sc_vol > 7 and cur > avwap and rsi < 70 and (cur <= avwap * 1.005):
-                # 뉴스 필터 (게이트키퍼 역할, 하지만 표시는 함)
+                # 뉴스 필터
                 if news_ok:
-                    if vol_ratio >= 3.0: # 완화됨 (4배 -> 3배)
+                    if vol_ratio >= 3.0: # 3배로 완화
                         category = "SHORT"
                         strat_name = "🚀 단타"; strat_class = "st-gamma"
                         is_high_conviction = True
@@ -412,7 +412,6 @@ if target_tickers:
             
             # Badge & News HTML
             badge_html = "<span class='st-highconv'>🔥 High Conviction</span>" if row['HighConviction'] else ""
-            # 뉴스가 있으면 무조건 보여줌 (High Conviction 아니어도)
             news_html = f"<span class='news-line'>📰 {row['NewsHeadline']}</span>" if row['NewsHeadline'] else ""
 
             html_content = f"""<div class="metric-card"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div></div>{news_html}<div class="price-row"><span class="price-label">현재(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{color_open}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{color_prev}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div><div style="margin-top:10px; margin-bottom:5px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">장세<br><span class="score-val {get_color(row['Regime'])}">{row['Regime']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">옵션<br><span class="score-val {get_color(row['Option'])}">{row['Option']:.0f}</span></div></div><div class="price-target-box"><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val pt-entry">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val pt-target">${row['Target']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val pt-stop">${row['Stop']:.2f}</span></div></div><div class="indicator-box">RSI: {row['RSI']:.0f} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center;"><div class="exit-box"><span class="{ex_hard}">칼손절: ${row['HardStop']:.2f}</span><br><span class="{ex_trail}">익절라인: ${row['TrailStop']:.2f}</span><br><span class="{ex_time}" style="color:#FF4444;">⏳강제청산: {row['TimeStop']}일</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">권장 비중</span><br><span class="bet-badge bet-bg">{row['BetText']}</span></div></div></div>"""
