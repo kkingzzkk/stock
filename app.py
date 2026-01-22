@@ -6,10 +6,16 @@ import plotly.graph_objects as go
 import numpy as np
 import pytz
 import textwrap
-from datetime import datetime, time
+import requests
+from datetime import datetime, time, timedelta
+
+# ==========================================
+# 🔑 API 설정 (형님이 주신 키 입력 완료)
+# ==========================================
+FINNHUB_API_KEY = "d5p0p81r01qu6m6bocv0d5p0p81r01qu6m6bocvg" 
 
 # === [1. 페이지 설정] ===
-st.set_page_config(page_title="QUANT NEXUS : FINAL PRO", page_icon="💎", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="QUANT NEXUS : REAL TRADER", page_icon="🦅", layout="wide", initial_sidebar_state="expanded")
 
 # === [2. 관심종목 세션 초기화] ===
 if 'watchlist' not in st.session_state:
@@ -26,24 +32,43 @@ def get_market_status():
     elif time(16, 0) < current_time <= time(20, 0): return "AFTER", "애프터", "mkt-aft"
     else: return "CLOSE", "데이장(정보없음)", "mkt-day"
 
+def get_timestamp_str():
+    ny_tz = pytz.timezone('America/New_York')
+    return datetime.now(ny_tz).strftime("%Y-%m-%d %H:%M:%S")
+
+# 뉴스 체크 함수 (API 키 연동)
+def check_recent_news(ticker):
+    if not FINNHUB_API_KEY: return False, None
+    try:
+        # 최근 24시간 뉴스만 조회
+        fr_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+        to_date = datetime.now().strftime("%Y-%m-%d")
+        url = f"https://finnhub.io/api/v1/company-news?symbol={ticker}&from={fr_date}&to={to_date}&token={FINNHUB_API_KEY}"
+        res = requests.get(url, timeout=1).json() 
+        
+        if isinstance(res, list) and len(res) > 0:
+            # 가장 최신 뉴스 1개 확인
+            latest = res[0]
+            return True, latest.get('headline', '뉴스 내용 없음')
+    except:
+        pass
+    return False, None
+
 # === [4. 스타일(CSS)] ===
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; }
     .metric-card { background-color: #1E1E1E; border: 1px solid #444; border-radius: 8px; padding: 15px; margin-bottom: 15px; position: relative; }
     
-    /* 3단 시세 행 */
     .price-row { display: flex; justify-content: space-between; align-items: center; padding: 2px 0; font-size: 13px; border-bottom: 1px solid #333; }
     .price-label { color: #aaa; font-size: 11px; }
     .price-val { font-weight: bold; color: white; font-family: monospace; font-size: 13px; }
 
-    /* 점수 컨테이너 */
     .score-container { display: flex; justify-content: space-between; margin-top: 10px; margin-bottom: 8px; background-color: #252526; padding: 6px; border-radius: 4px; }
     .score-item { text-align: center; font-size: 10px; color: #888; width: 19%; }
     .score-val { font-weight: bold; font-size: 13px; display: block; margin-top: 2px; }
     .sc-high { color: #00FF00; } .sc-mid { color: #FFD700; } .sc-low { color: #FF4444; }
     
-    /* 지표 박스 */
     .indicator-box { background-color: #252526; border-radius: 4px; padding: 6px; margin-top: 8px; font-size: 11px; color: #ccc; text-align: center; border: 1px solid #333; }
     .opt-row { display: flex; justify-content: space-between; font-size: 11px; margin-top: 4px; font-weight: bold; }
     .opt-call { color: #00FF00; } .opt-put { color: #FF4444; }
@@ -51,20 +76,17 @@ st.markdown("""
     .opt-bar-c { background-color: #00FF00; height: 100%; }
     .opt-bar-p { background-color: #FF4444; height: 100%; }
 
-    /* 가격 정보 박스 */
     .price-target-box { display: flex; justify-content: space-between; background-color: #151515; padding: 8px; border-radius: 4px; margin-top: 8px; margin-bottom: 8px; border: 1px dashed #444; }
     .pt-item { text-align: center; width: 33%; font-size: 12px; }
     .pt-label { color: #aaa; font-size: 10px; display: block; }
     .pt-val { font-weight: bold; font-size: 13px; color: white; }
     .pt-entry { color: #74b9ff; } .pt-target { color: #00FF00; } .pt-stop { color: #FF4444; }
 
-    /* Exit & Betting */
     .exit-box { background-color: #2d3436; border-left: 3px solid #636e72; padding: 8px; font-size: 11px; color: #dfe6e9; margin-top: 10px; }
     .exit-primary { color: #fff; font-weight: bold; border-left-color: #00FF00 !important; }
     .bet-badge { font-size: 11px; font-weight: bold; padding: 3px 8px; border-radius: 4px; color: black; float: right; margin-top: 5px; }
     .bet-bg { background-color: #74b9ff; }
 
-    /* Header */
     .ticker-header { font-size: 18px; font-weight: bold; color: #00CCFF; text-decoration: none !important; }
     .ticker-header:hover { color: #fff !important; text-decoration: underline !important; }
     .badge { padding: 2px 5px; border-radius: 3px; font-size: 9px; font-weight: bold; color: white; margin-left: 5px; vertical-align: middle;}
@@ -74,16 +96,19 @@ st.markdown("""
     .mkt-cls { background-color: #6e7681; color: white; }
     .mkt-day { background-color: #e17055; color: white; }
     
-    /* Tags */
     .st-gamma { background-color: #6c5ce7; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block; }
     .st-squeeze { background-color: #0984e3; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block;}
     .st-value { background-color: #00b894; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block;}
     .st-risk { background-color: #d63031; color: white; padding: 3px 8px; border-radius: 4px; font-size: 11px; font-weight: bold; display:inline-block;}
     .st-none { background-color: #333; color: #777; padding: 3px 8px; border-radius: 4px; font-size: 11px; display:inline-block;}
+    
+    /* High Conviction Badge */
+    .st-highconv { background-color: #e17055; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold; display:inline-block; margin-left: 5px; vertical-align: middle; }
+    .news-line { color: #ffa502; font-size: 11px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 </style>
 """, unsafe_allow_html=True)
 
-# === [5. 데이터 설정: 30개 섹터 Full List] ===
+# === [5. 데이터 설정] ===
 SECTORS = {
     "01. 🇺🇸 시장 지수": ["SPY", "QQQ", "DIA", "IWM", "VTI", "VOO", "TLT", "HYG", "UVXY", "VXX"],
     "02. 🔥 지수 3배 (ETF)": ["TQQQ", "SQQQ", "SOXL", "SOXS", "UPRO", "SPXU", "TMF", "TMV", "LABU", "LABD", "FNGU", "FNGD", "BULZ", "BERZ", "YINN", "YANG"],
@@ -125,17 +150,13 @@ INDEX_CONSTITUENTS = {
     "RUSSELL_GROWTH": ["SMCI", "MSTR", "COIN", "CVNA", "AFRM", "DKNG", "HOOD", "RIVN", "SOFI", "PLTR", "PATH", "U", "RBLX", "OPEN", "LCID", "MARA", "RIOT", "CLSK", "GME", "AMC", "UPST", "AI", "IONQ", "RGTI", "QUBT", "JOBY", "ACHR", "ASTS", "LUNR", "RKLB"]
 }
 
-# === [6. 설정값] ===
+# === [6. 설정값 (기본)] ===
 CONFIG = {
     "NAV": 10000, 
-    "BASE_BET": 0.15,
-    "HARD_STOP": 0.94,
-    "TRAIL_STOP": 0.91,
-    "TIME_STOP": 10
 }
 
 # === [7. 엔진: Logic Core] ===
-@st.cache_data(ttl=600) # 메모리 보호: 10분 캐시
+@st.cache_data(ttl=600)
 def get_market_data(tickers):
     tickers = list(set(tickers))
     
@@ -170,10 +191,9 @@ def get_market_data(tickers):
             if not hist_rt.empty: cur = hist_rt['Close'].iloc[-1]
             else: cur = hist_day['Close'].iloc[-1]
 
-            # Price Diff Calculation (추가됨)
+            # Price Diff
             open_price = hist_day['Open'].iloc[-1]
             prev_close = hist_day['Close'].iloc[-2]
-            
             diff_open = cur - open_price
             diff_prev = cur - prev_close
             chg_open = (diff_open / open_price) * 100
@@ -200,10 +220,11 @@ def get_market_data(tickers):
             sc_trend = max(0, min(10, sc_trend))
             
             vol_avg = hist_day['Volume'].rolling(20).mean().iloc[-1]
-            vol_ratio = (hist_day['Volume'].iloc[-1] / vol_avg) if vol_avg > 0 else 1.0
+            vol_val = hist_day['Volume'].iloc[-1]
+            vol_ratio = (vol_val / vol_avg) if vol_avg > 0 else 1.0
             sc_vol = min(10, vol_ratio * 3)
             
-            # Options
+            # Options (가중치 0.5배)
             sc_option = 5.0
             pcr = 1.0; c_vol = 0; p_vol = 0
             
@@ -223,13 +244,57 @@ def get_market_data(tickers):
                     elif pcr > 1.2: sc_option -= 2.0
             except: pass
             sc_option = max(0, min(10, sc_option))
-            
-            total_opt = c_vol + p_vol
-            c_pct = (c_vol / total_opt * 100) if total_opt > 0 else 50
-            p_pct = (p_vol / total_opt * 100) if total_opt > 0 else 50
+            sc_option *= 0.5 
 
-            # Bet Size
-            base_amt = CONFIG["NAV"] * CONFIG["BASE_BET"]
+            # === [뉴스 & 수급 체크] ===
+            news_ok, news_hl = check_recent_news(ticker)
+            
+            # === [전략별 진입 조건 및 자금 관리] ===
+            category = "NONE"; strat_name="관망"; strat_class="st-none"
+            time_stop_days = 0; target_pct = 0; stop_pct = 0; trail_pct = 0
+            bet_ratio = 0.0; is_high_conviction = False
+
+            # 1. 단타
+            if has_intraday and sc_vol > 7 and cur > avwap and rsi < 70 and (cur <= avwap * 1.005):
+                # 뉴스 필터 (게이트키퍼)
+                if news_ok:
+                    if vol_ratio >= 4.0: # 뉴스 있고 거래량 4배 이상 -> High Conviction
+                        category = "SHORT"
+                        strat_name = "🚀 단타"; strat_class = "st-gamma"
+                        is_high_conviction = True
+                    else: # 뉴스 있는데 거래량 약함 -> 차단
+                        category = "NONE"
+                        strat_name = "🛑 뉴스관망"; strat_class = "st-risk"
+                else: # 뉴스 없음 -> 일반 단타
+                    category = "SHORT"
+                    strat_name = "🚀 단타"; strat_class = "st-gamma"
+
+                if category == "SHORT":
+                    time_stop_days = 1
+                    target_pct = 0.03; stop_pct = 0.02; trail_pct = 0.01
+                    bet_ratio = 0.05
+
+            # 2. 스윙
+            elif sc_squeeze > 7 and sc_trend > 6: 
+                category = "SWING"
+                strat_name = "🌊 스윙"; strat_class = "st-squeeze"
+                time_stop_days = 14
+                target_pct = 0.10; stop_pct = 0.06; trail_pct = 0.04
+                bet_ratio = 0.10 
+
+            # 3. 장투
+            elif sc_trend > 8 and regime_score > 7: 
+                category = "LONG"
+                strat_name = "🌲 장투"; strat_class = "st-value"
+                time_stop_days = 90
+                target_pct = 0.30; stop_pct = 0.15; trail_pct = 0.10
+                bet_ratio = 0.15
+
+            else:
+                target_pct = 0.05; stop_pct = 0.03; trail_pct = 0.02; time_stop_days = 5
+                bet_ratio = 0.0
+
+            base_amt = CONFIG["NAV"] * bet_ratio
             multiplier = 1.0
             ret_std = hist_day['Close'].pct_change().rolling(5).std().iloc[-1]
             if ret_std > 0.04: multiplier *= 0.7 
@@ -237,37 +302,36 @@ def get_market_data(tickers):
             if regime_score < 4.0: multiplier *= 0.5
             final_bet = base_amt * multiplier
             
-            # Category
-            category = "NONE"; primary_exit = ""; strat_class="st-none"; strat_name="관망"
-            
-            if has_intraday and sc_vol > 7 and cur > avwap: 
-                category = "SHORT"; primary_exit = "Hard Stop"; strat_class="st-gamma"; strat_name="🚀 단타"
-            elif sc_squeeze > 7 and sc_trend > 6: 
-                category = "SWING"; primary_exit = "Time Stop"; strat_class="st-squeeze"; strat_name="🌊 스윙"
-            elif sc_trend > 8 and regime_score > 7: 
-                category = "LONG"; primary_exit = "Trailing"; strat_class="st-value"; strat_name="🌲 장투"
-            
-            journal_txt = f"{ticker} | {category} | Entry: {cur:.2f} | Rel.Sqz: {sc_squeeze:.1f} | VolPenalty: {'YES' if ret_std > 0.04 else 'NO'}"
-            
-            bet_text = "비중:최대" if multiplier >= 1.2 else "비중:보통" if multiplier >= 1.0 else "비중:축소" if multiplier > 0.5 else "비중:최소"
-            
-            tgt_price = cur * (1 + (0.02 * (3.5 if category == 'SHORT' else 2.0)))
-            stp_price = cur * (1 - (0.02 * 1.5))
+            if bet_ratio == 0: bet_text = "관망"
+            else: bet_text = "비중:최대" if multiplier >= 1.2 else "비중:보통" if multiplier >= 1.0 else "비중:축소" if multiplier > 0.5 else "비중:최소"
+
+            tgt_price = cur * (1 + target_pct)
+            hard_stop_price = cur * (1 - stop_pct)
+            trail_stop_price = cur * (1 - trail_pct)
+
+            journal_txt = {
+                "ticker": ticker,
+                "squeeze": sc_squeeze,
+                "entry": cur,
+                "category": category,
+                "timestamp": get_timestamp_str()
+            }
 
             return {
                 "Ticker": ticker, "Price": cur, "Category": category, "StratName": strat_name, "StratClass": strat_class,
                 "Squeeze": sc_squeeze, "Trend": sc_trend, "Regime": regime_score, "Vol": sc_vol, "Option": sc_option,
                 "BetAmount": final_bet, "Multiplier": multiplier, "BetText": bet_text,
-                "Target": tgt_price, "Stop": stp_price,
-                "HardStop": cur * CONFIG["HARD_STOP"], "TrailStop": cur * CONFIG["TRAIL_STOP"], "TimeStop": CONFIG["TIME_STOP"],
-                "PrimaryExit": primary_exit, "Journal": journal_txt, "History": hist_day['Close'],
+                "Target": tgt_price, "Stop": hard_stop_price,
+                "HardStop": hard_stop_price, "TrailStop": trail_stop_price, "TimeStop": time_stop_days,
+                "PrimaryExit": "Time" if category == "SWING" else "Hard" if category == "SHORT" else "Trail",
+                "Journal": journal_txt, "History": hist_day['Close'],
                 "ChgOpen": chg_open, "ChgPrev": chg_prev, "DiffOpen": diff_open, "DiffPrev": diff_prev,
                 "RSI": rsi, "PCR": pcr, "CallVol": c_vol, "PutVol": p_vol, "CallPct": c_pct, "PutPct": p_pct,
-                "MktLabel": mkt_label, "MktClass": mkt_class
+                "MktLabel": mkt_label, "MktClass": mkt_class,
+                "HighConviction": is_high_conviction, "NewsHeadline": news_hl
             }
         except: return None
     
-    # 램 보호: 스레드 5개로 제한
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(fetch_single, t) for t in tickers]
         for f in concurrent.futures.as_completed(futures):
@@ -331,18 +395,21 @@ if target_tickers:
         # [Render Function]
         def render_card(row, unique_id):
             def get_color(val): return "sc-high" if val >= 7 else "sc-mid" if val >= 4 else "sc-low"
-            ex_hard = "exit-primary" if row['PrimaryExit'] == "Hard Stop" else ""
-            ex_time = "exit-primary" if row['PrimaryExit'] == "Time Stop" else ""
-            ex_trail = "exit-primary" if row['PrimaryExit'] == "Trailing" else ""
+            ex_hard = "exit-primary" if row['PrimaryExit'] == "Hard" else ""
+            ex_time = "exit-primary" if row['PrimaryExit'] == "Time" else ""
+            ex_trail = "exit-primary" if row['PrimaryExit'] == "Trail" else ""
             
             color_open = "#00FF00" if row['ChgOpen'] >= 0 else "#FF4444"
             color_prev = "#00FF00" if row['ChgPrev'] >= 0 else "#FF4444"
             
             is_fav = row['Ticker'] in st.session_state.watchlist
             fav_icon = "❤️" if is_fav else "🤍"
+            
+            # Badge & News HTML
+            badge_html = "<span class='st-highconv'>🔥 High Conviction</span>" if row['HighConviction'] else ""
+            news_html = f"<span class='news-line'>📰 {row['NewsHeadline']}</span>" if row['HighConviction'] and row['NewsHeadline'] else ""
 
-            # 3단 시세(가격+%) Minified HTML
-            html_content = f"""<div class="metric-card"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a> <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div></div><div class="price-row"><span class="price-label">현재(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{color_open}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{color_prev}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div><div style="margin-top:10px; margin-bottom:5px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">장세<br><span class="score-val {get_color(row['Regime'])}">{row['Regime']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">옵션<br><span class="score-val {get_color(row['Option'])}">{row['Option']:.0f}</span></div></div><div class="price-target-box"><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val pt-entry">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val pt-target">${row['Target']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val pt-stop">${row['Stop']:.2f}</span></div></div><div class="indicator-box">RSI: {row['RSI']:.0f} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center;"><div class="exit-box"><span class="{ex_hard}">칼손절: ${row['HardStop']:.2f}</span><br><span class="{ex_trail}">익절라인: ${row['TrailStop']:.2f}</span><br><span class="{ex_time}">유효기간: {row['TimeStop']}일</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">권장 비중</span><br><span class="bet-badge bet-bg">{row['BetText']}</span></div></div></div>"""
+            html_content = f"""<div class="metric-card"><div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;"><div><a href="https://finance.yahoo.com/quote/{row['Ticker']}" target="_blank" class="ticker-header">{row['Ticker']}</a>{badge_html} <span class="badge {row['MktClass']}">{row['MktLabel']}</span></div></div>{news_html}<div class="price-row"><span class="price-label">현재(24h)</span><span class="price-val">${row['Price']:.2f}</span></div><div class="price-row"><span class="price-label">시가대비</span><span class="price-val" style="color:{color_open}">{row['DiffOpen']:+.2f} ({row['ChgOpen']:+.2f}%)</span></div><div class="price-row"><span class="price-label">전일대비</span><span class="price-val" style="color:{color_prev}">{row['DiffPrev']:+.2f} ({row['ChgPrev']:+.2f}%)</span></div><div style="margin-top:10px; margin-bottom:5px; text-align:center;"><span class="{row['StratClass']}">{row['StratName']}</span></div><div class="score-container"><div class="score-item">응축<br><span class="score-val {get_color(row['Squeeze'])}">{row['Squeeze']:.0f}</span></div><div class="score-item">추세<br><span class="score-val {get_color(row['Trend'])}">{row['Trend']:.0f}</span></div><div class="score-item">장세<br><span class="score-val {get_color(row['Regime'])}">{row['Regime']:.0f}</span></div><div class="score-item">수급<br><span class="score-val {get_color(row['Vol'])}">{row['Vol']:.0f}</span></div><div class="score-item">옵션<br><span class="score-val {get_color(row['Option'])}">{row['Option']:.0f}</span></div></div><div class="price-target-box"><div class="pt-item"><span class="pt-label">진입가</span><span class="pt-val pt-entry">${row['Price']:.2f}</span></div><div class="pt-item"><span class="pt-label">목표가</span><span class="pt-val pt-target">${row['Target']:.2f}</span></div><div class="pt-item"><span class="pt-label">손절가</span><span class="pt-val pt-stop">${row['Stop']:.2f}</span></div></div><div class="indicator-box">RSI: {row['RSI']:.0f} | PCR: {row['PCR']:.2f}<div class="opt-row"><span class="opt-call">Call: {int(row['CallVol']):,}</span><span class="opt-put">Put: {int(row['PutVol']):,}</span></div><div class="opt-bar-bg"><div class="opt-bar-c" style="width:{row['CallPct']}%;"></div><div class="opt-bar-p" style="width:{row['PutPct']}%;"></div></div></div><div style="display:flex; justify-content:space-between; align-items:center;"><div class="exit-box"><span class="{ex_hard}">칼손절: ${row['HardStop']:.2f}</span><br><span class="{ex_trail}">익절라인: ${row['TrailStop']:.2f}</span><br><span class="{ex_time}" style="color:#FF4444;">⏳강제청산: {row['TimeStop']}일</span></div><div style="text-align:right;"><span style="color:#888; font-size:10px;">권장 비중</span><br><span class="bet-badge bet-bg">{row['BetText']}</span></div></div></div>"""
             
             c1, c2 = st.columns([0.85, 0.15])
             with c2:
@@ -384,3 +451,4 @@ if target_tickers:
             with tab2:
                 for i, row in enumerate(market_data):
                     render_card(row, f"list_{i}")
+                    st.json(row['Journal'])
